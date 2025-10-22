@@ -127,11 +127,11 @@
 		}
 	};
 
-	const createFolder = async ({ name, data }) => {
-		if (name === '') {
-			toast.error($i18n.t('Folder name cannot be empty.'));
-			return;
-		}
+        const createFolder = async ({ name, meta, data, password, password_hint }) => {
+                if (name === '') {
+                        toast.error($i18n.t('Folder name cannot be empty.'));
+                        return;
+                }
 
 		const rootFolders = Object.values(folders).filter((folder) => folder.parent_id === null);
 		if (rootFolders.find((folder) => folder.name.toLowerCase() === name.toLowerCase())) {
@@ -158,13 +158,16 @@
 			}
 		};
 
-		const res = await createNewFolder(localStorage.token, {
-			name,
-			data
-		}).catch((error) => {
-			toast.error(`${error}`);
-			return null;
-		});
+                const res = await createNewFolder(localStorage.token, {
+                        name,
+                        ...(meta ? { meta } : {}),
+                        ...(data ? { data } : {}),
+                        ...(password ? { password } : {}),
+                        ...(password_hint !== undefined ? { password_hint } : {})
+                }).catch((error) => {
+                        toast.error(`${error}`);
+                        return null;
+                });
 
 		if (res) {
 			// newFolderId = res.id;

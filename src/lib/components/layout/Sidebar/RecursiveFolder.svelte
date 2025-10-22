@@ -20,13 +20,17 @@
 		updateFolderParentIdById,
 		getFolderById
 	} from '$lib/apis/folders';
-	import {
-		getChatById,
-		getChatsByFolderId,
-		getChatListByFolderId,
-		importChat,
-		updateChatFolderIdById
-	} from '$lib/apis/chats';
+        import {
+                getChatById,
+                getChatsByFolderId,
+                getChatListByFolderId,
+                importChat,
+                updateChatFolderIdById
+        } from '$lib/apis/chats';
+        import {
+                getStoredFolderAccessToken,
+                clearFolderAccessToken
+        } from '$lib/utils/folderAccess';
 
 	import ChevronDown from '../../icons/ChevronDown.svelte';
 	import ChevronRight from '../../icons/ChevronRight.svelte';
@@ -286,48 +290,66 @@
 
 	let showDeleteConfirm = false;
 
-	const deleteHandler = async () => {
-		const res = await deleteFolderById(localStorage.token, folderId).catch((error) => {
-			toast.error(`${error}`);
-			return null;
-		});
+        const deleteHandler = async () => {
+                const res = await deleteFolderById(localStorage.token, folderId).catch((error) => {
+                        toast.error(`${error}`);
+                        return null;
+                });
 
-		if (res) {
-			toast.success($i18n.t('Folder deleted successfully'));
-			onDelete(folderId);
-		}
-	};
+                if (res) {
+                        toast.success($i18n.t('Folder deleted successfully'));
+                        clearFolderAccessToken(folderId);
+                        onDelete(folderId);
+                }
+        };
 
-	const updateHandler = async ({ name, meta, data }) => {
-		if (name === '') {
-			toast.error($i18n.t('Folder name cannot be empty.'));
-			return;
-		}
+        const updateHandler = async ({
+                name,
+                meta,
+                data,
+                password,
+                password_hint,
+                remove_password
+        }) => {
+                if (name === '') {
+                        toast.error($i18n.t('Folder name cannot be empty.'));
+                        return;
+                }
 
 		const currentName = folders[folderId].name;
 
 		name = name.trim();
 		folders[folderId].name = name;
 
-		const res = await updateFolderById(localStorage.token, folderId, {
-			name,
-			...(meta ? { meta } : {}),
-			...(data ? { data } : {})
-		}).catch((error) => {
-			toast.error(`${error}`);
+                const res = await updateFolderById(localStorage.token, folderId, {
+                        name,
+                        ...(meta ? { meta } : {}),
+                        ...(data ? { data } : {}),
+                        ...(password ? { password } : {}),
+                        ...(password_hint !== undefined ? { password_hint } : {}),
+                        ...(remove_password ? { remove_password } : {})
+                }).catch((error) => {
+                        toast.error(`${error}`);
 
-			folders[folderId].name = currentName;
-			return null;
-		});
+                        folders[folderId].name = currentName;
+                        return null;
+                });
 
-		if (res) {
-			folders[folderId].name = name;
-			if (data) {
-				folders[folderId].data = data;
-			}
+                if (res) {
+                        folders[folderId].name = name;
+                        if (data) {
+                                folders[folderId].data = data;
+                        }
+                        if (res.meta) {
+                                folders[folderId].meta = res.meta;
+                        }
 
-			// toast.success($i18n.t('Folder name updated successfully'));
-			toast.success($i18n.t('Folder updated successfully'));
+                        if (password || remove_password || (res.meta?.password_protected ?? false) === false) {
+                                clearFolderAccessToken(folderId);
+                        }
+
+                        // toast.success($i18n.t('Folder name updated successfully'));
+                        toast.success($i18n.t('Folder updated successfully'));
 
 			if ($selectedFolder?.id === folderId) {
 				const folder = await getFolderById(localStorage.token, folderId).catch((error) => {
@@ -361,19 +383,36 @@
 		}, 500);
 	};
 
-	let chats = null;
-	export const setFolderItems = async () => {
-		await tick();
-		if (open) {
-			chats = await getChatListByFolderId(localStorage.token, folderId).catch((error) => {
-				toast.error(`${error}`);
-				return [];
-			});
+        let chats = null;
+        export const setFolderItems = async () => {
+                await tick();
+                if (open) {
+                        const requiresPassword = folders[folderId]?.meta?.password_protected ?? false;
+                        const folderAccessToken = getStoredFolderAccessToken(folderId);
 
-			if ($selectedFolder?.id === folderId) {
-				const folder = await getFolderById(localStorage.token, folderId).catch((error) => {
-					toast.error(`${error}`);
-					return null;
+                        if (requiresPassword && !folderAccessToken) {
+                                chats = [];
+                        } else {
+                                chats = await getChatListByFolderId(
+                                        localStorage.token,
+                                        folderId,
+                                        1,
+                                        folderAccessToken
+                                ).catch((error) => {
+                                        if (requiresPassword) {
+                                                clearFolderAccessToken(folderId);
+                                                return [];
+                                        }
+
+                                        toast.error(`${error}`);
+                                        return [];
+                                });
+                        }
+
+                        if ($selectedFolder?.id === folderId) {
+                                const folder = await getFolderById(localStorage.token, folderId).catch((error) => {
+                                        toast.error(`${error}`);
+                                        return null;
 				});
 
 				if (folder) {

@@ -1,9 +1,12 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 type FolderForm = {
-	name?: string;
-	data?: Record<string, any>;
-	meta?: Record<string, any>;
+        name?: string;
+        data?: Record<string, any>;
+        meta?: Record<string, any>;
+        password?: string;
+        password_hint?: string | null;
+        remove_password?: boolean;
 };
 
 export const createNewFolder = async (token: string, folderForm: FolderForm) => {
@@ -97,7 +100,7 @@ export const getFolderById = async (token: string, id: string) => {
 };
 
 export const updateFolderById = async (token: string, id: string, folderForm: FolderForm) => {
-	let error = null;
+        let error = null;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/folders/${id}/update`, {
 		method: 'POST',
@@ -125,7 +128,38 @@ export const updateFolderById = async (token: string, id: string, folderForm: Fo
 		throw error;
 	}
 
-	return res;
+        return res;
+};
+
+export const unlockFolder = async (token: string, id: string, password: string) => {
+        let error = null;
+
+        const res = await fetch(`${WEBUI_API_BASE_URL}/folders/${id}/unlock`, {
+                method: 'POST',
+                headers: {
+                        Accept: 'application/json',
+                        'Content-Type': 'application/json',
+                        authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                        password
+                })
+        })
+                .then(async (res) => {
+                        if (!res.ok) throw await res.json();
+                        return res.json();
+                })
+                .catch((err) => {
+                        error = err.detail ?? err;
+                        console.error(err);
+                        return null;
+                });
+
+        if (error) {
+                throw error;
+        }
+
+        return res as { access_token: string };
 };
 
 export const updateFolderIsExpandedById = async (

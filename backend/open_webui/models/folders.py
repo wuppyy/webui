@@ -6,10 +6,11 @@ import re
 
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Column, Text, JSON, Boolean, func
+from sqlalchemy import BigInteger, Column, Text, JSON, Boolean
 
 from open_webui.internal.db import Base, get_db
 from open_webui.env import SRC_LOG_LEVELS
+from open_webui.utils.auth import get_password_hash
 
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ class FolderModel(BaseModel):
 
 class FolderMetadataResponse(BaseModel):
     icon: Optional[str] = None
+    password_protected: bool = False
+    password_hint: Optional[str] = None
 
 
 class FolderNameIdResponse(BaseModel):
@@ -73,6 +76,8 @@ class FolderForm(BaseModel):
     name: str
     data: Optional[dict] = None
     meta: Optional[dict] = None
+    password: Optional[str] = None
+    password_hint: Optional[str] = None
     model_config = ConfigDict(extra="allow")
 
 
@@ -80,6 +85,9 @@ class FolderUpdateForm(BaseModel):
     name: Optional[str] = None
     data: Optional[dict] = None
     meta: Optional[dict] = None
+    password: Optional[str] = None
+    password_hint: Optional[str] = None
+    remove_password: Optional[bool] = None
     model_config = ConfigDict(extra="allow")
 
 
@@ -89,11 +97,33 @@ class FolderTable:
     ) -> Optional[FolderModel]:
         with get_db() as db:
             id = str(uuid.uuid4())
+            payload = form_data.model_dump(exclude_unset=True) or {}
+
+            password = payload.pop("password", None)
+            password_hint = payload.pop("password_hint", None)
+
+            meta = {**(payload.get("meta") or {})}
+            meta.pop("password_hash", None)
+
+            if password:
+                meta["password_hash"] = get_password_hash(password)
+                meta["password_protected"] = True
+                if password_hint:
+                    meta["password_hint"] = password_hint
+                else:
+                    meta.pop("password_hint", None)
+            else:
+                meta.pop("password_hash", None)
+                meta.pop("password_hint", None)
+                meta["password_protected"] = bool(meta.get("password_protected", False))
+
+            payload["meta"] = meta or None
+
             folder = FolderModel(
                 **{
                     "id": id,
                     "user_id": user_id,
-                    **(form_data.model_dump(exclude_unset=True) or {}),
+                    **payload,
                     "parent_id": parent_id,
                     "created_at": int(time.time()),
                     "updated_at": int(time.time()),
@@ -222,12 +252,12 @@ class FolderTable:
                 if not folder:
                     return None
 
-                form_data = form_data.model_dump(exclude_unset=True)
+                form_payload = form_data.model_dump(exclude_unset=True)
 
                 existing_folder = (
                     db.query(Folder)
                     .filter_by(
-                        name=form_data.get("name"),
+                        name=form_payload.get("name"),
                         parent_id=folder.parent_id,
                         user_id=user_id,
                     )
@@ -237,18 +267,65 @@ class FolderTable:
                 if existing_folder and existing_folder.id != id:
                     return None
 
-                folder.name = form_data.get("name", folder.name)
-                if "data" in form_data:
+                password = form_payload.pop("password", None)
+                password_hint = form_payload.pop("password_hint", None)
+                remove_password = form_payload.pop("remove_password", None)
+
+                if "name" in form_payload:
+                    folder.name = form_payload.get("name", folder.name)
+
+                if "data" in form_payload:
                     folder.data = {
                         **(folder.data or {}),
-                        **form_data["data"],
+                        **form_payload["data"],
                     }
 
-                if "meta" in form_data:
-                    folder.meta = {
-                        **(folder.meta or {}),
-                        **form_data["meta"],
-                    }
+                meta = {**(folder.meta or {})}
+
+                if "meta" in form_payload:
+                    meta.update(
+                        {
+                            k: v
+                            for k, v in (form_payload["meta"] or {}).items()
+                            if k != "password_hash"
+                        }
+                    )
+
+                if remove_password:
+                    meta.pop("password_hash", None)
+                    meta["password_protected"] = False
+                    if password_hint is not None:
+                        if password_hint:
+                            meta["password_hint"] = password_hint
+                        else:
+                            meta.pop("password_hint", None)
+                    else:
+                        meta.pop("password_hint", None)
+                elif password:
+                    meta["password_hash"] = get_password_hash(password)
+                    meta["password_protected"] = True
+                    if password_hint:
+                        meta["password_hint"] = password_hint
+                    else:
+                        meta.pop("password_hint", None)
+                else:
+                    if password_hint is not None:
+                        if meta.get("password_hash"):
+                            if password_hint:
+                                meta["password_hint"] = password_hint
+                            else:
+                                meta.pop("password_hint", None)
+                        else:
+                            meta.pop("password_hint", None)
+
+                if meta:
+                    meta.pop("password_hash", None) if not meta.get("password_hash") else None
+                    if meta.get("password_hash"):
+                        meta["password_protected"] = True
+                    else:
+                        meta.pop("password_hash", None)
+                        meta["password_protected"] = bool(meta.get("password_protected", False))
+                folder.meta = meta or None
 
                 folder.updated_at = int(time.time())
                 db.commit()
