@@ -1,14 +1,15 @@
 <script lang="ts">
 	import { getContext, createEventDispatcher, onMount, tick } from 'svelte';
 
-	import Spinner from '$lib/components/common/Spinner.svelte';
-	import Modal from '$lib/components/common/Modal.svelte';
-	import XMark from '$lib/components/icons/XMark.svelte';
+        import Spinner from '$lib/components/common/Spinner.svelte';
+        import Modal from '$lib/components/common/Modal.svelte';
+        import XMark from '$lib/components/icons/XMark.svelte';
+        import Switch from '$lib/components/common/Switch.svelte';
 
-	import { toast } from 'svelte-sonner';
-	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
-	import { user } from '$lib/stores';
+        import { toast } from 'svelte-sonner';
+        import { page } from '$app/stores';
+        import { goto } from '$app/navigation';
+        import { user } from '$lib/stores';
 
 	import Textarea from '$lib/components/common/Textarea.svelte';
 	import Knowledge from '$lib/components/workspace/Models/Knowledge.svelte';
@@ -26,32 +27,70 @@
 	let meta = {
 		background_image_url: null
 	};
-	let data = {
-		system_prompt: '',
-		files: []
-	};
+        let data = {
+                system_prompt: '',
+                files: []
+        };
 
-	let loading = false;
+        let enablePassword = false;
+        let hasExistingPassword = false;
+        let password = '';
+        let confirmPassword = '';
+        let passwordHint = '';
 
-	const submitHandler = async () => {
-		loading = true;
+        let loading = false;
 
-		if ((data?.files ?? []).some((file) => file.status === 'uploading')) {
-			toast.error($i18n.t('Please wait until all files are uploaded.'));
-			loading = false;
-			return;
-		}
+        const submitHandler = async () => {
+                loading = true;
 
-		await onSubmit({
-			name,
-			meta,
-			data
-		});
-		show = false;
-		loading = false;
-	};
+                if ((data?.files ?? []).some((file) => file.status === 'uploading')) {
+                        toast.error($i18n.t('Please wait until all files are uploaded.'));
+                        loading = false;
+                        return;
+                }
 
-	const init = async () => {
+                if (enablePassword) {
+                        if (!hasExistingPassword && password.trim() === '') {
+                                toast.error($i18n.t('Password cannot be empty.'));
+                                loading = false;
+                                return;
+                        }
+
+                        if (password !== confirmPassword) {
+                                toast.error($i18n.t('Passwords do not match.'));
+                                loading = false;
+                                return;
+                        }
+                }
+
+                const metaPayload = { ...(meta || {}) };
+                delete metaPayload.password_protected;
+                delete metaPayload.password_hint;
+
+                const payload: Record<string, any> = {
+                        name,
+                        meta: metaPayload,
+                        data
+                };
+
+                if (enablePassword) {
+                        if (password.trim() !== '') {
+                                payload.password = password;
+                        }
+                        payload.password_hint = passwordHint?.trim() ? passwordHint.trim() : null;
+                } else {
+                        payload.password_hint = null;
+                        if (hasExistingPassword) {
+                                payload.remove_password = true;
+                        }
+                }
+
+                await onSubmit(payload);
+                show = false;
+                loading = false;
+        };
+
+        const init = async () => {
 		if (folderId) {
 			folder = await getFolderById(localStorage.token, folderId).catch((error) => {
 				toast.error(`${error}`);
@@ -62,14 +101,26 @@
 			meta = folder.meta || {
 				background_image_url: null
 			};
-			data = folder.data || {
-				system_prompt: '',
-				files: []
-			};
-		}
+                        data = folder.data || {
+                                system_prompt: '',
+                                files: []
+                        };
 
-		focusInput();
-	};
+                        enablePassword = folder?.meta?.password_protected ?? false;
+                        hasExistingPassword = enablePassword;
+                        passwordHint = folder?.meta?.password_hint ?? '';
+                        password = '';
+                        confirmPassword = '';
+                } else {
+                        enablePassword = false;
+                        hasExistingPassword = false;
+                        passwordHint = '';
+                        password = '';
+                        confirmPassword = '';
+                }
+
+                focusInput();
+        };
 
 	const focusInput = async () => {
 		await tick();
@@ -84,16 +135,21 @@
 		init();
 	}
 
-	$: if (!show && !edit) {
-		name = '';
-		meta = {
-			background_image_url: null
-		};
-		data = {
-			system_prompt: '',
-			files: []
-		};
-	}
+        $: if (!show && !edit) {
+                name = '';
+                meta = {
+                        background_image_url: null
+                };
+                data = {
+                        system_prompt: '',
+                        files: []
+                };
+                enablePassword = false;
+                hasExistingPassword = false;
+                password = '';
+                confirmPassword = '';
+                passwordHint = '';
+        }
 </script>
 
 <Modal size="md" bind:show>
@@ -170,11 +226,11 @@
 						}}
 					/>
 
-					<div class="flex justify-between w-full mt-1 items-center">
-						<div class="text-xs text-gray-500">{$i18n.t('Folder Background Image')}</div>
+                                        <div class="flex justify-between w-full mt-1 items-center">
+                                                <div class="text-xs text-gray-500">{$i18n.t('Folder Background Image')}</div>
 
-						<div class="">
-							<button
+                                                <div class="">
+                                                        <button
 								aria-labelledby="chat-background-label background-image-url-state"
 								class="p-1 px-3 text-xs flex rounded-sm transition"
 								on:click={() => {
@@ -195,10 +251,58 @@
 										: $i18n.t('Reset')}</span
 								>
 							</button>
-						</div>
-					</div>
+                                                </div>
+                                        </div>
 
-					<hr class=" border-gray-50 dark:border-gray-850 my-2.5 w-full" />
+                                        <div class="flex justify-between w-full mt-3 items-center">
+                                                <div class="text-xs text-gray-500">{$i18n.t('Folder Password')}</div>
+
+                                                <Switch bind:state={enablePassword} />
+                                        </div>
+
+                                        {#if enablePassword}
+                                                <div class="flex flex-col space-y-2 mt-2">
+                                                        <div>
+                                                                <div class=" mb-1 text-xs text-gray-500">{$i18n.t('Password')}</div>
+                                                                <input
+                                                                        class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden"
+                                                                        type="password"
+                                                                        bind:value={password}
+                                                                        placeholder="********"
+                                                                        autocomplete="new-password"
+                                                                />
+                                                                {#if hasExistingPassword}
+                                                                        <div class="mt-1 text-[0.65rem] text-gray-500 dark:text-gray-400">
+                                                                                {$i18n.t('Leave blank to keep current password.')}
+                                                                        </div>
+                                                                {/if}
+                                                        </div>
+
+                                                        <div>
+                                                                <div class=" mb-1 text-xs text-gray-500">{$i18n.t('Confirm Password')}</div>
+                                                                <input
+                                                                        class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden"
+                                                                        type="password"
+                                                                        bind:value={confirmPassword}
+                                                                        placeholder="********"
+                                                                        autocomplete="new-password"
+                                                                />
+                                                        </div>
+
+                                                        <div>
+                                                                <div class=" mb-1 text-xs text-gray-500">{$i18n.t('Password Hint')}</div>
+                                                                <input
+                                                                        class="w-full text-sm bg-transparent placeholder:text-gray-300 dark:placeholder:text-gray-700 outline-hidden"
+                                                                        type="text"
+                                                                        bind:value={passwordHint}
+                                                                        placeholder={$i18n.t('Optional')}
+                                                                        autocomplete="off"
+                                                                />
+                                                        </div>
+                                                </div>
+                                        {/if}
+
+                                        <hr class=" border-gray-50 dark:border-gray-850 my-2.5 w-full" />
 
 					{#if $user?.role === 'admin' || ($user?.permissions.chat?.system_prompt ?? true)}
 						<div class="my-1">

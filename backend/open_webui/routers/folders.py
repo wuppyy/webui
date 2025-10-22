@@ -2,6 +2,7 @@ import logging
 import os
 import shutil
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Optional
 from pydantic import BaseModel
@@ -29,7 +30,13 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status,
 from fastapi.responses import FileResponse, StreamingResponse
 
 
-from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.auth import (
+    create_token,
+    decode_token,
+    get_admin_user,
+    get_verified_user,
+    verify_password,
+)
 from open_webui.utils.access_control import has_permission
 
 
@@ -39,6 +46,58 @@ log.setLevel(SRC_LOG_LEVELS["MODELS"])
 
 router = APIRouter()
 
+
+FOLDER_ACCESS_HEADER = "x-folder-access-token"
+FOLDER_ACCESS_SCOPE = "folder_access"
+
+
+def sanitize_folder(folder: Optional[FolderModel]) -> Optional[FolderModel]:
+    if not folder:
+        return folder
+
+    meta = {**(folder.meta or {})}
+    password_hash = meta.pop("password_hash", None)
+    password_protected = bool(password_hash or meta.get("password_protected"))
+
+    if password_protected:
+        meta["password_protected"] = True
+    else:
+        meta["password_protected"] = False
+        meta.pop("password_hint", None)
+
+    sanitized_meta = meta or None
+
+    return folder.model_copy(update={"meta": sanitized_meta})
+
+
+def ensure_folder_access(
+    folder: FolderModel, request: Request, user_id: str
+) -> None:
+    meta = folder.meta or {}
+    password_hash = meta.get("password_hash")
+    password_protected = bool(password_hash or meta.get("password_protected"))
+
+    if not password_protected:
+        return
+
+    token = request.headers.get(FOLDER_ACCESS_HEADER)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ERROR_MESSAGES.DEFAULT("Folder access requires a valid password"),
+        )
+
+    payload = decode_token(token)
+    if (
+        not payload
+        or payload.get("folder_id") != folder.id
+        or payload.get("sub") != user_id
+        or payload.get("scope") != FOLDER_ACCESS_SCOPE
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.DEFAULT("Invalid folder access token"),
+        )
 
 ############################
 # Get Folders
@@ -82,7 +141,8 @@ async def get_folders(user=Depends(get_verified_user)):
                     folder.id, user.id, FolderUpdateForm(data=folder.data)
                 )
 
-        folder_list.append(FolderNameIdResponse(**folder.model_dump()))
+        sanitized = sanitize_folder(folder)
+        folder_list.append(FolderNameIdResponse(**sanitized.model_dump()))
 
     return folder_list
 
@@ -106,7 +166,7 @@ def create_folder(form_data: FolderForm, user=Depends(get_verified_user)):
 
     try:
         folder = Folders.insert_new_folder(user.id, form_data)
-        return folder
+        return sanitize_folder(folder)
     except Exception as e:
         log.exception(e)
         log.error("Error creating folder")
@@ -125,7 +185,7 @@ def create_folder(form_data: FolderForm, user=Depends(get_verified_user)):
 async def get_folder_by_id(id: str, user=Depends(get_verified_user)):
     folder = Folders.get_folder_by_id_and_user_id(id, user.id)
     if folder:
-        return folder
+        return sanitize_folder(folder)
     else:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -158,7 +218,7 @@ async def update_folder_name_by_id(
 
         try:
             folder = Folders.update_folder_by_id_and_user_id(id, user.id, form_data)
-            return folder
+            return sanitize_folder(folder)
         except Exception as e:
             log.exception(e)
             log.error(f"Error updating folder: {id}")
@@ -202,7 +262,7 @@ async def update_folder_parent_id_by_id(
             folder = Folders.update_folder_parent_id_by_id_and_user_id(
                 id, user.id, form_data.parent_id
             )
-            return folder
+            return sanitize_folder(folder)
         except Exception as e:
             log.exception(e)
             log.error(f"Error updating folder: {id}")
@@ -236,7 +296,7 @@ async def update_folder_is_expanded_by_id(
             folder = Folders.update_folder_is_expanded_by_id_and_user_id(
                 id, user.id, form_data.is_expanded
             )
-            return folder
+            return sanitize_folder(folder)
         except Exception as e:
             log.exception(e)
             log.error(f"Error updating folder: {id}")
@@ -249,6 +309,53 @@ async def update_folder_is_expanded_by_id(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
+
+
+############################
+# Unlock Folder
+############################
+
+
+class FolderPasswordForm(BaseModel):
+    password: str
+
+
+@router.post("/{id}/unlock")
+async def unlock_folder(
+    id: str, form_data: FolderPasswordForm, user=Depends(get_verified_user)
+):
+    folder = Folders.get_folder_by_id_and_user_id(id, user.id)
+
+    if not folder:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    meta = folder.meta or {}
+    password_hash = meta.get("password_hash")
+    if not password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT("Folder is not password protected"),
+        )
+
+    if not verify_password(form_data.password, password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=ERROR_MESSAGES.DEFAULT("Incorrect folder password"),
+        )
+
+    token = create_token(
+        {
+            "sub": user.id,
+            "folder_id": folder.id,
+            "scope": FOLDER_ACCESS_SCOPE,
+        },
+        expires_delta=timedelta(hours=1),
+    )
+
+    return {"access_token": token}
 
 
 ############################
