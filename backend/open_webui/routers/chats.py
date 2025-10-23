@@ -21,55 +21,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 
-from open_webui.utils.auth import decode_token, get_admin_user, get_verified_user
+from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
 
 router = APIRouter()
-
-FOLDER_ACCESS_HEADER = "x-folder-access-token"
-FOLDER_ACCESS_SCOPE = "folder_access"
-
-
-def get_folder_with_access(folder_id: str, request: Request, user_id: str):
-    folder = Folders.get_folder_by_id_and_user_id(folder_id, user_id)
-
-    if not folder:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ERROR_MESSAGES.NOT_FOUND,
-        )
-
-    meta = folder.meta or {}
-    password_hash = meta.get("password_hash")
-    password_protected = bool(password_hash or meta.get("password_protected"))
-
-    if not password_protected:
-        return folder
-
-    token = request.headers.get(FOLDER_ACCESS_HEADER)
-
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=ERROR_MESSAGES.DEFAULT("Folder access requires a valid password"),
-        )
-
-    payload = decode_token(token)
-    if (
-        not payload
-        or payload.get("folder_id") != folder.id
-        or payload.get("sub") != user_id
-        or payload.get("scope") != FOLDER_ACCESS_SCOPE
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=ERROR_MESSAGES.DEFAULT("Invalid folder access token"),
-        )
-
-    return folder
 
 ############################
 # GetChatList
@@ -251,11 +209,7 @@ def search_user_chats(
 
 
 @router.get("/folder/{folder_id}", response_model=list[ChatResponse])
-async def get_chats_by_folder_id(
-    folder_id: str, request: Request, user=Depends(get_verified_user)
-):
-    get_folder_with_access(folder_id, request, user.id)
-
+async def get_chats_by_folder_id(folder_id: str, user=Depends(get_verified_user)):
     folder_ids = [folder_id]
     children_folders = Folders.get_children_folders_by_id_and_user_id(
         folder_id, user.id
@@ -271,14 +225,9 @@ async def get_chats_by_folder_id(
 
 @router.get("/folder/{folder_id}/list")
 async def get_chat_list_by_folder_id(
-    folder_id: str,
-    request: Request,
-    page: Optional[int] = 1,
-    user=Depends(get_verified_user),
+    folder_id: str, page: Optional[int] = 1, user=Depends(get_verified_user)
 ):
     try:
-        get_folder_with_access(folder_id, request, user.id)
-
         limit = 60
         skip = (page - 1) * limit
 
